@@ -10,6 +10,7 @@ public class MainActivity extends Activity {
  TextView title=new TextView(this);title.setText("SnapChart AI | Chart Study");title.setTextColor(0xff74e8bc);title.setTextSize(25);root.addView(title);
  status=new TextView(this);status.setText("Upload a historical screenshot. Manual study markers only; no predictions or trade signals.");status.setTextColor(-1);root.addView(status);
  button(root,"Upload chart",()->{Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.setType("image/*");i.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(i,1);});
+ button(root,"Practice chart — show example labels",()->practiceChart());
  chart=new Chart();root.addView(chart,new LinearLayout.LayoutParams(-1,680));
  labels=new Spinner(this);labels.setAdapter(new ArrayAdapter<String>(this,android.R.layout.simple_spinner_dropdown_item,terms));root.addView(labels);
  button(root,"Undo marker",()->{if(!marks.isEmpty())marks.remove(marks.size()-1);chart.invalidate();});
@@ -20,6 +21,30 @@ public class MainActivity extends Activity {
  button(root,"Save marked PNG",()->save(false));button(root,"Share marked PNG",()->save(true));
  }
  @Override protected void onActivityResult(int request,int result,Intent data){super.onActivityResult(request,result,data);if(request!=1||result!=RESULT_OK||data==null)return;try{ImageDecoder.Source s=ImageDecoder.createSource(getContentResolver(),data.getData());source=ImageDecoder.decodeBitmap(s,(d,info,src)->{d.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE);int w=info.getSize().getWidth(),h=info.getSize().getHeight();float f=Math.min(1f,2000f/Math.max(w,h));d.setTargetSize(Math.max(1,(int)(w*f)),Math.max(1,(int)(h*f)));});marks.clear();marked=true;chart.invalidate();status.setText("Chart loaded. Select a study label and tap the image.");}catch(Exception e){status.setText("Could not open image.");}}
+ void practiceChart(){
+  final int w=1000,h=720;
+  source=Bitmap.createBitmap(w,h,Bitmap.Config.ARGB_8888);
+  Canvas c=new Canvas(source);c.drawColor(0xff12202b);Paint p=new Paint(3);
+  p.setColor(0xff314453);p.setStrokeWidth(1);
+  for(int y=100;y<640;y+=90)c.drawLine(35,y,965,y,p);
+  p.setColor(0xffd8e6ef);p.setTextSize(28);p.setTypeface(Typeface.DEFAULT_BOLD);
+  c.drawText("FICTIONAL PRACTICE CHART",35,45,p);p.setTypeface(Typeface.DEFAULT);p.setTextSize(20);
+  c.drawText("Illustrative labels only | No real market data",35,73,p);
+  int[] closes={440,400,355,390,420,370,305,335,365,290,245,270,310,345,385,325,395,455,430,490,515,470,510,550};
+  for(int i=0;i<closes.length;i++){
+   int x=65+i*38,o=i==0?465:closes[i-1],cl=closes[i];
+   int top=Math.min(o,cl),bottom=Math.max(o,cl);
+   p.setColor(cl<o?0xff56c9a4:0xffe9858d);p.setStrokeWidth(3);
+   c.drawLine(x,top-12-(i%3)*4,x,bottom+12+(i%3)*4,p);
+   c.drawRect(x-10,top,x+10,Math.max(top+3,bottom),p);
+  }
+  marks.clear();
+  marks.add(new Mark(293f/w,305f/h,"BOS example"));
+  marks.add(new Mark(407f/w,280f/h,"FVG example"));
+  marks.add(new Mark(673f/w,455f/h,"MSS example"));
+  marked=true;chart.invalidate();
+  status.setText("Fictional practice example loaded. Labels are illustrative, not detected from a real chart.");
+ }
  void drawMarks(Canvas c,float w,float h){Paint p=new Paint(3);p.setTextSize(Math.max(16,w/32));p.setStrokeWidth(Math.max(2,w/350));for(Mark m:marks){float x=m.x*w,y=m.y*h;p.setColor(0xfffbd46d);c.drawCircle(x,y,5,p);c.drawLine(Math.max(0,x-35),y,Math.min(w,x+35),y,p);float tx=Math.max(2,Math.min(w-p.measureText(m.label)-4,x+8));float ty=Math.max(p.getTextSize(),y-8);p.setColor(0xff101820);c.drawRect(tx-2,ty-p.getTextSize(),tx+p.measureText(m.label)+2,ty+3,p);p.setColor(0xfffbd46d);c.drawText(m.label,tx,ty,p);}}
  class Chart extends View{RectF area=new RectF();Paint p=new Paint(3);Chart(){super(MainActivity.this);}protected void onDraw(Canvas c){c.drawColor(0xff24313d);if(source==null){p.setColor(-1);p.setTextSize(26);c.drawText("No chart selected",22,45,p);return;}float f=Math.min(getWidth()/(float)source.getWidth(),getHeight()/(float)source.getHeight());float w=source.getWidth()*f,h=source.getHeight()*f;area.set((getWidth()-w)/2,(getHeight()-h)/2,(getWidth()+w)/2,(getHeight()+h)/2);c.drawBitmap(source,null,area,p);if(marked){c.save();c.translate(area.left,area.top);drawMarks(c,w,h);c.restore();}}public boolean onTouchEvent(android.view.MotionEvent e){if(e.getAction()==MotionEvent.ACTION_UP&&source!=null&&area.contains(e.getX(),e.getY())){marks.add(new Mark((e.getX()-area.left)/area.width(),(e.getY()-area.top)/area.height(),labels.getSelectedItem().toString()));marked=true;invalidate();performClick();}return true;}public boolean performClick(){super.performClick();return true;}}
  void save(boolean share){if(source==null){status.setText("Upload a chart first.");return;}try{Bitmap out=source.copy(Bitmap.Config.ARGB_8888,true);drawMarks(new Canvas(out),out.getWidth(),out.getHeight());ContentValues v=new ContentValues();v.put(MediaStore.Images.Media.DISPLAY_NAME,"SnapChart_"+System.currentTimeMillis()+".png");v.put(MediaStore.Images.Media.MIME_TYPE,"image/png");v.put(MediaStore.Images.Media.RELATIVE_PATH,"Pictures/SnapChart");Uri uri=getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI,v);if(uri==null)throw new IOException();try(OutputStream stream=getContentResolver().openOutputStream(uri)){out.compress(Bitmap.CompressFormat.PNG,100,stream);}status.setText("Saved to Pictures/SnapChart.");if(share){Intent i=new Intent(Intent.ACTION_SEND);i.setType("image/png");i.putExtra(Intent.EXTRA_STREAM,uri);i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);startActivity(Intent.createChooser(i,"Share chart"));}}catch(Exception e){status.setText("Could not save image.");}}
