@@ -1,0 +1,6 @@
+plugins { id 'com.android.application' }
+android {
+ namespace 'com.snapchart.study'
+ compileSdk 34
+ defaultConfig { applicationId 'com.snapchart.study'; minSdk 29; targetSdk 34; versionCode 1; versionName '0.1' }
+}
