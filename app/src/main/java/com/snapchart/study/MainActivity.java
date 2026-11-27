@@ -121,76 +121,94 @@ public class MainActivity extends Activity {
   resultSummary.setText("BOS: "+bos+"   MSS: "+mss+"   FVG: "+fvg+"\nGold: BOS | Pink: MSS | Blue: FVG\n\n"+explanation.toString());
  }
  // ---- Real screenshot analysis: read solid green/red candles from any chart screenshot ----
- // Candle colour test: bullish = green/teal dominant, bearish = red dominant.
+ // Relaxed colour test so JPEG-washed and thin candles still read.
  // Covers TradingView (#26a69a / #ef5350), Binance, MetaTrader and the built-in worksheet colours.
  boolean isBullPixel(int pixel){
   int r=Color.red(pixel),g=Color.green(pixel),b=Color.blue(pixel);
   int mx=Math.max(r,Math.max(g,b)),mn=Math.min(r,Math.min(g,b));
-  if(mx-mn<40||mx<60)return false;
-  return g==mx&&g>r+25&&g>=b;
+  if(mx-mn<25||mx<50)return false;
+  return g==mx&&g>r+15&&g>=b;
  }
  boolean isBearPixel(int pixel){
   int r=Color.red(pixel),g=Color.green(pixel),b=Color.blue(pixel);
   int mx=Math.max(r,Math.max(g,b)),mn=Math.min(r,Math.min(g,b));
-  if(mx-mn<40||mx<60)return false;
-  return r==mx&&r>g+25&&r>b+15;
+  if(mx-mn<25||mx<50)return false;
+  return r==mx&&r>g+15&&r>b+8;
  }
  void analyzeScreenshot(){
   if(source==null){status.setText("Upload a chart screenshot first.");return;}
   int w=source.getWidth(),h=source.getHeight();
-  int[] colCount=new int[w];
-  int[] row=new int[w];
-  int topY=h,botY=-1;
+  int[] rowD=new int[h],row=new int[w];
   for(int y=0;y<h;y++){
    source.getPixels(row,0,w,0,y,w,1);
-   for(int x=0;x<w;x++){
-    if(isBullPixel(row[x])||isBearPixel(row[x])){colCount[x]++;if(y<topY)topY=y;if(y>botY)botY=y;}
-   }
+   for(int x=0;x<w;x++)if(isBullPixel(row[x])||isBearPixel(row[x]))rowD[y]++;
   }
-  if(botY<=topY){screenshotUnsupported();return;}
-  // Group consecutive candle columns into candles; merge 1-2px gaps from anti-aliasing.
-  ArrayList<int[]> clusters=new ArrayList<>();
-  int start=-1;
+  // Chart band: longest run of rows with enough candle pixels (ignores UI text and volume bars).
+  int thr=Math.max(2,w/300);
+  int bestTop=-1,bestBot=-1,s=-1,gap=0;
+  for(int y=0;y<h;y++){
+   if(rowD[y]>=thr){if(s<0)s=y;gap=0;}
+   else if(s>=0){gap++;if(gap>15){int e=y-gap;if(bestTop<0||e-s>bestBot-bestTop){bestTop=s;bestBot=e;}s=-1;gap=0;}}
+  }
+  if(s>=0){int e=h-1;if(bestTop<0||e-s>bestBot-bestTop){bestTop=s;bestBot=e;}}
+  if(bestTop<0||bestBot<=bestTop){screenshotUnsupported();return;}
+  int bandTop=bestTop,bandBot=bestBot,bandH=bandBot-bandTop+1;
+  // Candle columns inside the band; merge 1-2px gaps only while the result stays narrow.
+  int[] col2=new int[w];
+  for(int y=bandTop;y<=bandBot;y++){
+   source.getPixels(row,0,w,0,y,w,1);
+   for(int x=0;x<w;x++)if(isBullPixel(row[x])||isBearPixel(row[x]))col2[x]++;
+  }
+  ArrayList<int[]> raw=new ArrayList<>();
+  s=-1;
   for(int x=0;x<w;x++){
-   if(colCount[x]>=3){if(start<0)start=x;}
-   else if(start>=0){clusters.add(new int[]{start,x-1});start=-1;}
+   if(col2[x]>=1){if(s<0)s=x;}
+   else if(s>=0){raw.add(new int[]{s,x-1});s=-1;}
   }
-  if(start>=0)clusters.add(new int[]{start,w-1});
-  ArrayList<int[]> merged=new ArrayList<>();
-  for(int[] cl:clusters){
-   if(!merged.isEmpty()&&cl[0]-merged.get(merged.size()-1)[1]<=2)merged.get(merged.size()-1)[1]=cl[1];
-   else merged.add(new int[]{cl[0],cl[1]});
+  if(s>=0)raw.add(new int[]{s,w-1});
+  ArrayList<int[]> clusters=new ArrayList<>();
+  for(int[] cl:raw){
+   if(!clusters.isEmpty()&&cl[0]-clusters.get(clusters.size()-1)[1]<=2&&(cl[1]-clusters.get(clusters.size()-1)[0]+1)<=12)clusters.get(clusters.size()-1)[1]=cl[1];
+   else clusters.add(new int[]{cl[0],cl[1]});
   }
-  clusters=merged;
-  int n=clusters.size();
-  if(n<8||n>600){screenshotUnsupported();return;}
-  for(int[] cl:clusters)if(cl[1]-cl[0]+1>120){screenshotUnsupported();return;}
-  // Decode OHLC for every candle. Value = -y, so a higher price is a larger value;
-  // structure rules only compare values, so no price scale is needed.
-  int[][] a=new int[n][4];
-  float[] cx=new float[n];
-  int[] tops=new int[n],bots=new int[n],bTops=new int[n],bBots=new int[n],ups=new int[n],downs=new int[n];
-  for(int i=0;i<n;i++){tops[i]=Integer.MAX_VALUE;bots[i]=-1;bTops[i]=Integer.MAX_VALUE;bBots[i]=-1;}
-  for(int y=topY;y<=botY;y++){
+  ArrayList<int[]> kept=new ArrayList<>();
+  for(int[] cl:clusters)if(cl[1]-cl[0]+1<=60)kept.add(cl);
+  int n=kept.size();
+  if(n<8){screenshotUnsupported();return;}
+  // Decode OHLC for every candle in one pass over the band rows.
+  // Value = -y, so a higher price is a larger value; structure rules only compare values.
+  int[] tops=new int[n],bots=new int[n],ups=new int[n],downs=new int[n],rowMax=new int[n];
+  int[][] rowCounts=new int[n][bandH];
+  for(int i=0;i<n;i++){tops[i]=Integer.MAX_VALUE;bots[i]=-1;}
+  for(int y=bandTop;y<=bandBot;y++){
    source.getPixels(row,0,w,0,y,w,1);
    for(int i=0;i<n;i++){
-    int x0=clusters.get(i)[0],x1=clusters.get(i)[1],cw=x1-x0+1,ru=0,rd=0;
+    int x0=kept.get(i)[0],x1=kept.get(i)[1],ru=0,rd=0;
     for(int x=x0;x<=x1;x++){if(isBullPixel(row[x]))ru++;else if(isBearPixel(row[x]))rd++;}
-    if(ru+rd>0){if(y<tops[i])tops[i]=y;if(y>bots[i])bots[i]=y;ups[i]+=ru;downs[i]+=rd;}
-    int need=Math.max(3,cw/2);
-    if(ru>=need||rd>=need){if(y<bTops[i])bTops[i]=y;if(y>bBots[i])bBots[i]=y;}
+    int c=ru+rd;
+    rowCounts[i][y-bandTop]=c;
+    if(c>0){if(y<tops[i])tops[i]=y;if(y>bots[i])bots[i]=y;ups[i]+=ru;downs[i]+=rd;if(c>rowMax[i])rowMax[i]=c;}
    }
   }
+  int[][] a=new int[n][4];
+  float[] cx=new float[n];
+  int m=0;
   for(int i=0;i<n;i++){
-   int top=tops[i],bottom=bots[i],bodyTop=bTops[i],bodyBottom=bBots[i];
-   if(bottom<=top||bodyBottom<bodyTop||ups[i]+downs[i]<2){screenshotUnsupported();return;}
+   int top=tops[i],bottom=bots[i];
+   if(bottom<=top||bottom-top>0.85*bandH)continue;
+   int need=Math.max(1,rowMax[i]/2),bodyTop=Integer.MAX_VALUE,bodyBottom=-1;
+   for(int k=0;k<bandH;k++)if(rowCounts[i][k]>=need){int y=bandTop+k;if(y<bodyTop)bodyTop=y;if(y>bodyBottom)bodyBottom=y;}
+   if(bodyBottom<bodyTop||ups[i]+downs[i]<2)continue;
    boolean bull=ups[i]>=downs[i];
    int hi=-top,lo=-bottom,bt=-bodyTop,bb=-bodyBottom;
    int open=bull?bb:bt,close=bull?bt:bb;
-   if(hi<Math.max(open,close)||lo>Math.min(open,close)){screenshotUnsupported();return;}
-   a[i]=new int[]{open,hi,lo,close};
-   cx[i]=(clusters.get(i)[0]+clusters.get(i)[1])/2f;
+   if(hi<Math.max(open,close)||lo>Math.min(open,close))continue;
+   a[m]=new int[]{open,hi,lo,close};
+   cx[m]=(kept.get(i)[0]+kept.get(i)[1])/2f;
+   m++;
   }
+  if(m<8){screenshotUnsupported();return;}
+  n=m;
   marks.clear();zones.clear();int hi=-1,lo=-1,previous=0,bos=0,mss=0,fvg=0,ob=0;
   StringBuilder explanation=new StringBuilder();
   for(int i=2;i<n;i++){
@@ -229,7 +247,7 @@ public class MainActivity extends Activity {
  }
  void screenshotUnsupported(){
   marks.clear();zones.clear();practiceActive=false;marked=true;chart.invalidate();
-  status.setText("Could not read candles from this screenshot. Use a clear chart with solid green/red candles, cropped close to the chart, without indicators covering the candles.");
+  status.setText("Could not read candles from this screenshot. Use a clear chart with solid green/red candles, cropped close to the chart, without indicators covering the candles. Tip: zoom in so the candles are bigger.");
   resultSummary.setText("No automatic result for this image. Manual annotation is still available.");
  }
  int decodeValue(int y,float oy,float sy){return Math.round(25+(690-(y-oy)/sy)/12f);}
