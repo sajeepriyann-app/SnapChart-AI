@@ -3,17 +3,18 @@ import android.app.*; import android.os.*; import android.content.*; import andr
 public class MainActivity extends Activity {
  Bitmap source; Chart chart; TextView status; Spinner labels; EditText notes; boolean marked=true; ArrayList<Mark> marks=new ArrayList<>();
  int practiceNumber=0; boolean practiceActive=false; TextView resultSummary; ArrayList<Zone> zones=new ArrayList<>();
- static class Zone {float x1,x2,y1,y2; Zone(float a,float b,float c,float d){x1=a;x2=b;y1=c;y2=d;}}
+ static class Zone {float x1,x2,y1,y2; String label; Zone(float a,float b,float c,float d,String l){x1=a;x2=b;y1=c;y2=d;label=l;}}
  String[] terms={"BOS","CHoCH","MSS","i-BOS","i-MSS","FVG","IFVG","POI","AOI","OB","Swing high","Swing low"};
  String[] descriptions={"Break of structure","Change of character","Market structure shift","Internal break of structure","Internal market structure shift","Fair value gap","Inverse fair value gap","Point of interest","Area of interest","Order block","Local high","Local low"};
  static class Mark { float x,y; String label; Mark(float x,float y,String l){this.x=x;this.y=y;label=l;} }
  void button(LinearLayout root,String label,Runnable action){Button b=new Button(this);b.setText(label);b.setAllCaps(false);b.setOnClickListener(v->action.run());root.addView(b);}
  @Override public void onCreate(Bundle b){super.onCreate(b);ScrollView scroll=new ScrollView(this);LinearLayout root=new LinearLayout(this);root.setOrientation(1);root.setPadding(22,22,22,22);root.setBackgroundColor(0xff101820);scroll.addView(root);setContentView(scroll);
  TextView title=new TextView(this);title.setText("SnapChart AI | Chart Study");title.setTextColor(0xff74e8bc);title.setTextSize(25);root.addView(title);
- status=new TextView(this);status.setText("Open or generate a fictional practice worksheet. Analyze to learn BOS, MSS and FVG.");status.setTextColor(-1);root.addView(status);
- button(root,"Upload practice worksheet / screenshot",()->{Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.setType("image/*");i.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(i,1);});
+ status=new TextView(this);status.setText("Upload a chart screenshot or generate a fictional practice worksheet. Analyze to mark BOS, MSS, FVG and OB.");status.setTextColor(-1);root.addView(status);
+ button(root,"Upload chart screenshot / practice worksheet",()->{Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.setType("image/*");i.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(i,1);});
  button(root,"New practice worksheet",()->practiceChart());
  button(root,"Analyze worksheet — BOS / MSS / FVG",()->analyzeWorksheet());
+ button(root,"Analyze screenshot — mark all patterns",()->analyzeScreenshot());
  button(root,"Save clean worksheet PNG",()->save(false,false));
  resultSummary=new TextView(this);resultSummary.setTextColor(0xffb9e9d7);resultSummary.setTextSize(16);resultSummary.setPadding(0,12,0,12);
  chart=new Chart();root.addView(chart,new LinearLayout.LayoutParams(-1,(int)(getResources().getDisplayMetrics().density*300)));root.addView(resultSummary);
@@ -52,7 +53,7 @@ public class MainActivity extends Activity {
   status.setText("Fictional worksheet ready. You can save its clean image and import it again.");
  }
  // The two corner swatches identify the fictional worksheet format and establish image scale.
- // Arbitrary market screenshots are not supported by this offline educational reader.
+ // Real chart screenshots are handled separately by analyzeScreenshot().
  boolean near(int pixel,int color,int tolerance){
   return Math.abs(Color.red(pixel)-Color.red(color))<=tolerance &&
     Math.abs(Color.green(pixel)-Color.green(color))<=tolerance &&
@@ -71,11 +72,11 @@ public class MainActivity extends Activity {
  void analyzeWorksheet(){
   if(source==null){status.setText("Create or upload a fictional worksheet first.");return;}
   float[] left=locate(0xffe7bd32),right=locate(0xffaf63f4);
-  if(left==null||right==null){unsupported();return;}
+  if(left==null||right==null){analyzeScreenshot();return;}
   float sx=(right[0]-left[0])/1152f,sy=(right[1]-left[1])/712f;
   float ox=left[0]-23.5f*sx,oy=left[1]-23.5f*sy;
   int w=source.getWidth(),h=source.getHeight();
-  if(sx<0.3f||sy<0.3f||Math.abs(sx/sy-1)>0.06f||ox< -3||oy< -3||ox+1200*sx>w+3||oy+760*sy>h+3){unsupported();return;}
+  if(sx<0.3f||sy<0.3f||Math.abs(sx/sy-1)>0.06f||ox< -3||oy< -3||ox+1200*sx>w+3||oy+760*sy>h+3){analyzeScreenshot();return;}
   int[][] a=new int[20][4];
   // Decode each candle's wick and body from the visible image pixels, not a saved answer list.
   for(int i=0;i<a.length;i++){
@@ -86,10 +87,10 @@ public class MainActivity extends Activity {
     if(near(p,green,36)||near(p,red,36)){top=Math.min(top,y);bottom=y;}
     if(near(q,green,36)||near(q,red,36)){bodyTop=Math.min(bodyTop,y);bodyBottom=y;if(near(q,green,36))up++;else down++;}
    }
-   if(bottom<=top||bodyBottom<bodyTop||up+down<2||bodyTop<top-2||bodyBottom>bottom+2){unsupported();return;}
+   if(bottom<=top||bodyBottom<bodyTop||up+down<2||bodyTop<top-2||bodyBottom>bottom+2){analyzeScreenshot();return;}
    int hi=decodeValue(top,oy,sy),lo=decodeValue(bottom,oy,sy),bt=decodeValue(bodyTop,oy,sy),bb=decodeValue(bodyBottom,oy,sy);
    int open=up>down?bb:bt,close=up>down?bt:bb;
-   if(hi<Math.max(open,close)||lo>Math.min(open,close)){unsupported();return;}
+   if(hi<Math.max(open,close)||lo>Math.min(open,close)){analyzeScreenshot();return;}
    a[i]=new int[]{open,hi,lo,close};
   }
   marks.clear();zones.clear();int hi=-1,lo=-1,previous=0,bos=0,mss=0,fvg=0;
@@ -111,13 +112,125 @@ public class MainActivity extends Activity {
    if(a[i][2]>a[i-2][1]){lower=a[i-2][1];upper=a[i][2];}
    else if(a[i][1]<a[i-2][2]){lower=a[i][1];upper=a[i-2][2];}
    if(upper>lower){fvg++;
-    zones.add(new Zone((ox+(practiceX(i-2)-15)*sx)/w,(ox+(practiceX(i)+15)*sx)/w,(oy+practiceY(upper)*sy)/h,(oy+practiceY(lower)*sy)/h));
+    zones.add(new Zone((ox+(practiceX(i-2)-15)*sx)/w,(ox+(practiceX(i)+15)*sx)/w,(oy+practiceY(upper)*sy)/h,(oy+practiceY(lower)*sy)/h,"FVG"));
     explanation.append("FVG at candles ").append(i-1).append("–").append(i+1).append(": first and third candle wick ranges leave a gap.\n");
    }
   }
   practiceActive=true;marked=true;chart.invalidate();
   status.setText("Worksheet pixels analyzed. Simplified educational rules; not predictions.");
   resultSummary.setText("BOS: "+bos+"   MSS: "+mss+"   FVG: "+fvg+"\nGold: BOS | Pink: MSS | Blue: FVG\n\n"+explanation.toString());
+ }
+ // ---- Real screenshot analysis: read solid green/red candles from any chart screenshot ----
+ // Candle colour test: bullish = green/teal dominant, bearish = red dominant.
+ // Covers TradingView (#26a69a / #ef5350), Binance, MetaTrader and the built-in worksheet colours.
+ boolean isBullPixel(int pixel){
+  int r=Color.red(pixel),g=Color.green(pixel),b=Color.blue(pixel);
+  int mx=Math.max(r,Math.max(g,b)),mn=Math.min(r,Math.min(g,b));
+  if(mx-mn<40||mx<60)return false;
+  return g==mx&&g>r+25&&g>=b;
+ }
+ boolean isBearPixel(int pixel){
+  int r=Color.red(pixel),g=Color.green(pixel),b=Color.blue(pixel);
+  int mx=Math.max(r,Math.max(g,b)),mn=Math.min(r,Math.min(g,b));
+  if(mx-mn<40||mx<60)return false;
+  return r==mx&&r>g+25&&r>b+15;
+ }
+ void analyzeScreenshot(){
+  if(source==null){status.setText("Upload a chart screenshot first.");return;}
+  int w=source.getWidth(),h=source.getHeight();
+  int[] colCount=new int[w];
+  int[] row=new int[w];
+  int topY=h,botY=-1;
+  for(int y=0;y<h;y++){
+   source.getPixels(row,0,w,0,y,w,1);
+   for(int x=0;x<w;x++){
+    if(isBullPixel(row[x])||isBearPixel(row[x])){colCount[x]++;if(y<topY)topY=y;if(y>botY)botY=y;}
+   }
+  }
+  if(botY<=topY){screenshotUnsupported();return;}
+  // Group consecutive candle columns into candles; merge 1-2px gaps from anti-aliasing.
+  ArrayList<int[]> clusters=new ArrayList<>();
+  int start=-1;
+  for(int x=0;x<w;x++){
+   if(colCount[x]>=3){if(start<0)start=x;}
+   else if(start>=0){clusters.add(new int[]{start,x-1});start=-1;}
+  }
+  if(start>=0)clusters.add(new int[]{start,w-1});
+  ArrayList<int[]> merged=new ArrayList<>();
+  for(int[] cl:clusters){
+   if(!merged.isEmpty()&&cl[0]-merged.get(merged.size()-1)[1]<=2)merged.get(merged.size()-1)[1]=cl[1];
+   else merged.add(new int[]{cl[0],cl[1]});
+  }
+  clusters=merged;
+  int n=clusters.size();
+  if(n<8||n>600){screenshotUnsupported();return;}
+  for(int[] cl:clusters)if(cl[1]-cl[0]+1>120){screenshotUnsupported();return;}
+  // Decode OHLC for every candle. Value = -y, so a higher price is a larger value;
+  // structure rules only compare values, so no price scale is needed.
+  int[][] a=new int[n][4];
+  float[] cx=new float[n];
+  int[] tops=new int[n],bots=new int[n],bTops=new int[n],bBots=new int[n],ups=new int[n],downs=new int[n];
+  for(int i=0;i<n;i++){tops[i]=Integer.MAX_VALUE;bots[i]=-1;bTops[i]=Integer.MAX_VALUE;bBots[i]=-1;}
+  for(int y=topY;y<=botY;y++){
+   source.getPixels(row,0,w,0,y,w,1);
+   for(int i=0;i<n;i++){
+    int x0=clusters.get(i)[0],x1=clusters.get(i)[1],cw=x1-x0+1,ru=0,rd=0;
+    for(int x=x0;x<=x1;x++){if(isBullPixel(row[x]))ru++;else if(isBearPixel(row[x]))rd++;}
+    if(ru+rd>0){if(y<tops[i])tops[i]=y;if(y>bots[i])bots[i]=y;ups[i]+=ru;downs[i]+=rd;}
+    int need=Math.max(3,cw/2);
+    if(ru>=need||rd>=need){if(y<bTops[i])bTops[i]=y;if(y>bBots[i])bBots[i]=y;}
+   }
+  }
+  for(int i=0;i<n;i++){
+   int top=tops[i],bottom=bots[i],bodyTop=bTops[i],bodyBottom=bBots[i];
+   if(bottom<=top||bodyBottom<bodyTop||ups[i]+downs[i]<2){screenshotUnsupported();return;}
+   boolean bull=ups[i]>=downs[i];
+   int hi=-top,lo=-bottom,bt=-bodyTop,bb=-bodyBottom;
+   int open=bull?bb:bt,close=bull?bt:bb;
+   if(hi<Math.max(open,close)||lo>Math.min(open,close)){screenshotUnsupported();return;}
+   a[i]=new int[]{open,hi,lo,close};
+   cx[i]=(clusters.get(i)[0]+clusters.get(i)[1])/2f;
+  }
+  marks.clear();zones.clear();int hi=-1,lo=-1,previous=0,bos=0,mss=0,fvg=0,ob=0;
+  StringBuilder explanation=new StringBuilder();
+  for(int i=2;i<n;i++){
+   int j=i-1;
+   if(a[j][1]>a[j-1][1]&&a[j][1]>a[i][1])hi=j;
+   if(a[j][2]<a[j-1][2]&&a[j][2]<a[i][2])lo=j;
+   int d=hi>=0&&a[i][3]>a[hi][1]?1:lo>=0&&a[i][3]<a[lo][2]?-1:0;
+   if(d!=0){
+    boolean shift=previous!=0&&previous!=d;String label=shift?"MSS":"BOS";
+    if(shift)mss++;else bos++;
+    int pivot=d>0?hi:lo,level=d>0?a[hi][1]:a[lo][2];
+    marks.add(new Mark(cx[i]/w,(-level)/(float)h,label));
+    explanation.append(label).append(" at candle ").append(i+1).append(": close crosses the previous local ").append(d>0?"high":"low").append(" at candle ").append(pivot+1).append(shift?"; direction differs from the previous break.":".").append("\n");
+    // Order block: last opposite-colour candle just before the break.
+    int obIdx=-1;
+    for(int k=i-1;k>=Math.max(0,i-4);k--){boolean kBull=a[k][3]>=a[k][0];if(d>0&&!kBull){obIdx=k;break;}if(d<0&&kBull){obIdx=k;break;}}
+    if(obIdx>=0){
+     float zy1=(-Math.max(a[obIdx][0],a[obIdx][3]))/(float)h,zy2=(-Math.min(a[obIdx][0],a[obIdx][3]))/(float)h;
+     zones.add(new Zone((cx[obIdx]-18)/w,(cx[obIdx]+18)/w,zy1,zy2,"OB"));
+     ob++;
+     explanation.append(d>0?"Bullish OB":"Bearish OB").append(" at candle ").append(obIdx+1).append(": last opposite candle before the ").append(label).append(".\n");
+    }
+    previous=d;if(d>0)hi=-1;else lo=-1;
+   }
+   int lower=0,upper=0;
+   if(a[i][2]>a[i-2][1]){lower=a[i-2][1];upper=a[i][2];}
+   else if(a[i][1]<a[i-2][2]){lower=a[i][1];upper=a[i-2][2];}
+   if(upper>lower){fvg++;
+    zones.add(new Zone((cx[i-2]-18)/w,(cx[i]+18)/w,(-upper)/(float)h,(-lower)/(float)h,"FVG"));
+    explanation.append("FVG at candles ").append(i-1).append("–").append(i+1).append(": first and third candle wick ranges leave a gap.\n");
+   }
+  }
+  practiceActive=true;marked=true;chart.invalidate();
+  status.setText("Screenshot analyzed: "+n+" candles found. Educational labels, not predictions.");
+  resultSummary.setText("BOS: "+bos+"   MSS: "+mss+"   FVG: "+fvg+"   OB: "+ob+"\nGold: BOS | Pink: MSS | Blue: FVG | Purple: OB\n\n"+explanation.toString());
+ }
+ void screenshotUnsupported(){
+  marks.clear();zones.clear();practiceActive=false;marked=true;chart.invalidate();
+  status.setText("Could not read candles from this screenshot. Use a clear chart with solid green/red candles, cropped close to the chart, without indicators covering the candles.");
+  resultSummary.setText("No automatic result for this image. Manual annotation is still available.");
  }
  int decodeValue(int y,float oy,float sy){return Math.round(25+(690-(y-oy)/sy)/12f);}
  void unsupported(){
@@ -127,7 +240,7 @@ public class MainActivity extends Activity {
  }
  float practiceX(int i){return 65+i*56;}
  float practiceY(int value){return 690-(value-25)*12f;}
- void drawMarks(Canvas c,float w,float h){Paint p=new Paint(3);p.setTextSize(Math.max(12,w/38));for(Zone z:zones){p.setColor(0x5558a9ff);c.drawRect(z.x1*w,z.y1*h,z.x2*w,z.y2*h,p);p.setColor(0xff83caff);p.setStrokeWidth(2);c.drawLine(z.x1*w,z.y1*h,z.x2*w,z.y1*h,p);c.drawText("FVG",z.x1*w,Math.max(p.getTextSize(),z.y1*h-2),p);}p.setStrokeWidth(Math.max(2,w/350));for(Mark m:marks){float x=m.x*w,y=m.y*h;p.setColor(m.label.equals("MSS")?0xfff8a0ce:0xfffbd46d);c.drawCircle(x,y,5,p);c.drawLine(Math.max(0,x-35),y,Math.min(w,x+35),y,p);float tx=Math.max(2,Math.min(w-p.measureText(m.label)-4,x+8));float ty=Math.max(p.getTextSize(),y-8);p.setColor(0xff101820);c.drawRect(tx-2,ty-p.getTextSize(),tx+p.measureText(m.label)+2,ty+3,p);p.setColor(m.label.equals("MSS")?0xfff8a0ce:0xfffbd46d);c.drawText(m.label,tx,ty,p);}}
+ void drawMarks(Canvas c,float w,float h){Paint p=new Paint(3);p.setTextSize(Math.max(12,w/38));for(Zone z:zones){boolean isOb="OB".equals(z.label);p.setColor(isOb?0x55b07fe0:0x5558a9ff);c.drawRect(z.x1*w,z.y1*h,z.x2*w,z.y2*h,p);p.setColor(isOb?0xffc39bff:0xff83caff);p.setStrokeWidth(2);c.drawLine(z.x1*w,z.y1*h,z.x2*w,z.y1*h,p);c.drawText(z.label,z.x1*w,Math.max(p.getTextSize(),z.y1*h-2),p);}p.setStrokeWidth(Math.max(2,w/350));for(Mark m:marks){float x=m.x*w,y=m.y*h;p.setColor(m.label.equals("MSS")?0xfff8a0ce:0xfffbd46d);c.drawCircle(x,y,5,p);c.drawLine(Math.max(0,x-35),y,Math.min(w,x+35),y,p);float tx=Math.max(2,Math.min(w-p.measureText(m.label)-4,x+8));float ty=Math.max(p.getTextSize(),y-8);p.setColor(0xff101820);c.drawRect(tx-2,ty-p.getTextSize(),tx+p.measureText(m.label)+2,ty+3,p);p.setColor(m.label.equals("MSS")?0xfff8a0ce:0xfffbd46d);c.drawText(m.label,tx,ty,p);}}
  class Chart extends View{RectF area=new RectF();Paint p=new Paint(3);Chart(){super(MainActivity.this);}protected void onDraw(Canvas c){c.drawColor(0xff24313d);if(source==null){p.setColor(-1);p.setTextSize(26);c.drawText("No chart selected",22,45,p);return;}float f=Math.min(getWidth()/(float)source.getWidth(),getHeight()/(float)source.getHeight());float w=source.getWidth()*f,h=source.getHeight()*f;area.set((getWidth()-w)/2,(getHeight()-h)/2,(getWidth()+w)/2,(getHeight()+h)/2);c.drawBitmap(source,null,area,p);if(marked){c.save();c.translate(area.left,area.top);drawMarks(c,w,h);c.restore();}}public boolean onTouchEvent(android.view.MotionEvent e){if(e.getAction()==MotionEvent.ACTION_UP&&source!=null&&!practiceActive&&area.contains(e.getX(),e.getY())){marks.add(new Mark((e.getX()-area.left)/area.width(),(e.getY()-area.top)/area.height(),labels.getSelectedItem().toString()));marked=true;invalidate();performClick();}return true;}public boolean performClick(){super.performClick();return true;}}
  void save(boolean share, boolean overlay){if(source==null){status.setText("Upload a chart first.");return;}try{Bitmap out=source.copy(Bitmap.Config.ARGB_8888,true);if(overlay)drawMarks(new Canvas(out),out.getWidth(),out.getHeight());ContentValues v=new ContentValues();v.put(MediaStore.Images.Media.DISPLAY_NAME,"SnapChart_"+System.currentTimeMillis()+".png");v.put(MediaStore.Images.Media.MIME_TYPE,"image/png");v.put(MediaStore.Images.Media.RELATIVE_PATH,"Pictures/SnapChart");Uri uri=getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI,v);if(uri==null)throw new IOException();try(OutputStream stream=getContentResolver().openOutputStream(uri)){out.compress(Bitmap.CompressFormat.PNG,100,stream);}status.setText("Saved to Pictures/SnapChart.");if(share){Intent i=new Intent(Intent.ACTION_SEND);i.setType("image/png");i.putExtra(Intent.EXTRA_STREAM,uri);i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);startActivity(Intent.createChooser(i,"Share chart"));}}catch(Exception e){status.setText("Could not save image.");}}
 }
